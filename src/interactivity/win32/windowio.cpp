@@ -193,23 +193,19 @@ void HandleKeyEvent(const HWND hWnd,
         // --- END LOAD BEARING CODE ---
     }
 
-    KeyEvent keyEvent{ !!bKeyDown, RepeatCount, VirtualKeyCode, VirtualScanCode, UNICODE_NULL, 0 };
+    auto event = SynthesizeKeyEvent(bKeyDown, RepeatCount, VirtualKeyCode, VirtualScanCode, UNICODE_NULL, 0);
 
     if (Message == WM_CHAR || Message == WM_SYSCHAR || Message == WM_DEADCHAR || Message == WM_SYSDEADCHAR)
     {
         // If this is a fake character, zero the scancode.
         if (lParam & 0x02000000)
         {
-            keyEvent.SetVirtualScanCode(0);
+            event.Event.KeyEvent.wVirtualScanCode = 0;
         }
-        keyEvent.SetActiveModifierKeys(GetControlKeyState(lParam));
+        event.Event.KeyEvent.dwControlKeyState = GetControlKeyState(lParam);
         if (Message == WM_CHAR || Message == WM_SYSCHAR)
         {
-            keyEvent.SetCharData(static_cast<wchar_t>(wParam));
-        }
-        else
-        {
-            keyEvent.SetCharData(L'\0');
+            event.Event.KeyEvent.uChar.UnicodeChar = static_cast<wchar_t>(wParam);
         }
     }
     else
@@ -219,8 +215,7 @@ void HandleKeyEvent(const HWND hWnd,
         {
             return;
         }
-        keyEvent.SetActiveModifierKeys(ControlKeyState);
-        keyEvent.SetCharData(L'\0');
+        event.Event.KeyEvent.dwControlKeyState = ControlKeyState;
     }
 
     const INPUT_KEY_INFO inputKeyInfo(VirtualKeyCode, ControlKeyState);
@@ -462,7 +457,7 @@ void HandleKeyEvent(const HWND hWnd,
         }
     }
 
-    HandleGenericKeyEvent(keyEvent, generateBreak);
+    HandleGenericKeyEvent(event, generateBreak);
 }
 
 // Routine Description:
@@ -929,26 +924,12 @@ BOOL HandleMouseEvent(const SCREEN_INFORMATION& ScreenInfo,
         break;
     }
 
-    ULONG EventsWritten = 0;
-    try
-    {
-        auto mouseEvent = std::make_unique<MouseEvent>(
-            MousePosition,
-            ConvertMouseButtonState(ButtonFlags, static_cast<UINT>(wParam)),
-            GetControlKeyState(0),
-            EventFlags);
-        EventsWritten = static_cast<ULONG>(gci.pInputBuffer->Write(std::move(mouseEvent)));
-    }
-    catch (...)
-    {
-        LOG_HR(wil::ResultFromCaughtException());
-        EventsWritten = 0;
-    }
-
-    if (EventsWritten != 1)
-    {
-        RIPMSG1(RIP_WARNING, "PutInputInBuffer: EventsWritten != 1 (0x%x), 1 expected", EventsWritten);
-    }
+    const auto mouseEvent = SynthesizeMouseEvent(
+        MousePosition,
+        ConvertMouseButtonState(ButtonFlags, static_cast<UINT>(wParam)),
+        GetControlKeyState(0),
+        EventFlags);
+    gci.pInputBuffer->Write(mouseEvent);
 
     return FALSE;
 }

@@ -22,7 +22,7 @@ namespace Microsoft::Console::VirtualTerminal
     class TerminalInput final
     {
     public:
-        TerminalInput(_In_ std::function<void(std::deque<std::unique_ptr<IInputEvent>>&)> pfn);
+        TerminalInput(_In_ std::function<void(const std::wstring_view&)> pfn);
 
         TerminalInput() = delete;
         TerminalInput(const TerminalInput& old) = default;
@@ -33,7 +33,7 @@ namespace Microsoft::Console::VirtualTerminal
 
         ~TerminalInput() = default;
 
-        bool HandleKey(const IInputEvent* const pInEvent);
+        bool HandleKey(const INPUT_RECORD& pInEvent);
         bool HandleFocus(const bool focused) noexcept;
 
         enum class Mode : size_t
@@ -90,7 +90,7 @@ namespace Microsoft::Console::VirtualTerminal
 #pragma endregion
 
     private:
-        std::function<void(std::deque<std::unique_ptr<IInputEvent>>&)> _pfnWriteEvents;
+        std::function<void(const std::wstring_view&)> _pfnWriteEvents;
 
         // storage location for the leading surrogate of a utf-16 surrogate pair
         std::optional<wchar_t> _leadingSurrogate;
@@ -101,10 +101,9 @@ namespace Microsoft::Console::VirtualTerminal
         bool _forceDisableWin32InputMode{ false };
 
         void _SendChar(const wchar_t ch);
-        void _SendNullInputSequence(const DWORD dwControlKeyState) const;
-        void _SendInputSequence(const std::wstring_view sequence) const noexcept;
+        void _SendInputSequence(const std::wstring_view& sequence) const noexcept;
         void _SendEscapedInputSequence(const wchar_t wch) const;
-        static std::wstring _GenerateWin32KeySequence(const KeyEvent& key);
+        void _GenerateWin32KeySequence(const KEY_EVENT_RECORD& key) const;
 
 #pragma region MouseInputState Management
         // These methods are defined in mouseInputState.cpp
