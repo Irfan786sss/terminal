@@ -21,7 +21,7 @@
 #include "../host/readDataCooked.hpp"
 #include "../host/output.h"
 #include "../host/_stream.h" // For WriteCharsLegacy
-#include "../host/cmdline.h" // For WC_LIMIT_BACKSPACE
+#include "../host/cmdline.h" // For WC_INTERACTIVE
 #include "test/CommonState.hpp"
 
 #include "../cascadia/TerminalCore/Terminal.hpp"
@@ -2891,8 +2891,7 @@ void ConptyRoundtripTests::TestResizeWithCookedRead()
     m_state->PrepareReadHandle();
     // TODO GH#5618: This string will get mangled, but we don't really care
     // about the buffer contents in this test, so it doesn't really matter.
-    const std::string_view cookedReadContents{ "This is some cooked read data" };
-    m_state->PrepareCookedReadData(cookedReadContents);
+    m_state->PrepareCookedReadData(L"This is some cooked read data");
 
     Log::Comment(L"Painting the frame");
     VERIFY_SUCCEEDED(renderer.PaintFrame());
@@ -3422,7 +3421,7 @@ void ConptyRoundtripTests::WrapNewLineAtBottomLikeMSYS()
         }
         else if (writingMethod == PrintWithWriteCharsLegacy)
         {
-            doWriteCharsLegacy(si, str, WC_LIMIT_BACKSPACE);
+            doWriteCharsLegacy(si, str, WC_INTERACTIVE);
         }
     };
 

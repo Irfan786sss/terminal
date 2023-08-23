@@ -512,7 +512,7 @@ namespace winrt::TerminalApp::implementation
     {
         if (const auto& realArgs = args.ActionArgs().try_as<CopyTextArgs>())
         {
-            const auto handled = _CopyText(realArgs.SingleLine(), realArgs.CopyFormatting());
+            const auto handled = _CopyText(realArgs.DismissSelection(), realArgs.SingleLine(), realArgs.CopyFormatting());
             args.Handled(handled);
         }
     }
@@ -1021,6 +1021,16 @@ namespace winrt::TerminalApp::implementation
         args.Handled(true);
     }
 
+    void TerminalPage::_HandleDisplayWorkingDirectory(const IInspectable& /*sender*/,
+                                                      const ActionEventArgs& args)
+    {
+        if (_settings.GlobalSettings().DebugFeaturesEnabled())
+        {
+            ShowTerminalWorkingDirectory();
+            args.Handled(true);
+        }
+    }
+
     void TerminalPage::_HandleSearchForText(const IInspectable& /*sender*/,
                                             const ActionEventArgs& args)
     {
@@ -1247,6 +1257,73 @@ namespace winrt::TerminalApp::implementation
         }
     }
 
+    void TerminalPage::_HandleSuggestions(const IInspectable& /*sender*/,
+                                          const ActionEventArgs& args)
+    {
+        if (args)
+        {
+            if (const auto& realArgs = args.ActionArgs().try_as<SuggestionsArgs>())
+            {
+                const auto source = realArgs.Source();
+                std::vector<Command> commandsCollection;
+                Control::CommandHistoryContext context{ nullptr };
+                winrt::hstring currentCommandline = L"";
+
+                // If the user wanted to use the current commandline to filter results,
+                //    OR they wanted command history (or some other source that
+                //       requires context from the control)
+                // then get that here.
+                const bool shouldGetContext = realArgs.UseCommandline() ||
+                                              WI_IsFlagSet(source, SuggestionsSource::CommandHistory);
+                if (shouldGetContext)
+                {
+                    if (const auto& control{ _GetActiveControl() })
+                    {
+                        context = control.CommandHistory();
+                        if (context)
+                        {
+                            currentCommandline = context.CurrentCommandline();
+                        }
+                    }
+                }
+
+                // Aggregate all the commands from the different sources that
+                // the user selected.
+
+                // Tasks are all the sendInput commands the user has saved in
+                // their settings file. Ask the ActionMap for those.
+                if (WI_IsFlagSet(source, SuggestionsSource::Tasks))
+                {
+                    const auto tasks = _settings.GlobalSettings().ActionMap().FilterToSendInput(currentCommandline);
+                    for (const auto& t : tasks)
+                    {
+                        commandsCollection.push_back(t);
+                    }
+                }
+
+                // Command History comes from the commands in the buffer,
+                // assuming the user has enabled shell integration. Get those
+                // from the active control.
+                if (WI_IsFlagSet(source, SuggestionsSource::CommandHistory) &&
+                    context != nullptr)
+                {
+                    const auto recentCommands = Command::HistoryToCommands(context.History(), currentCommandline, false);
+                    for (const auto& t : recentCommands)
+                    {
+                        commandsCollection.push_back(t);
+                    }
+                }
+
+                // Open the palette with all these commands in it.
+                _OpenSuggestions(_GetActiveControl(),
+                                 winrt::single_threaded_vector<Command>(std::move(commandsCollection)),
+                                 SuggestionsMode::Palette,
+                                 currentCommandline);
+                args.Handled(true);
+            }
+        }
+    }
+
     void TerminalPage::_HandleColorSelection(const IInspectable& /*sender*/,
                                              const ActionEventArgs& args)
     {
@@ -1272,6 +1349,17 @@ namespace winrt::TerminalApp::implementation
         }
     }
 
+    void TerminalPage::_HandleToggleBroadcastInput(const IInspectable& /*sender*/,
+                                                   const ActionEventArgs& args)
+    {
+        if (const auto activeTab{ _GetFocusedTabImpl() })
+        {
+            activeTab->ToggleBroadcastInput();
+            args.Handled(true);
+        }
+        // If the focused tab wasn't a TerminalTab, then leave handled=false
+    }
+
     void TerminalPage::_HandleRestartConnection(const IInspectable& /*sender*/,
                                                 const ActionEventArgs& args)
     {
@@ -1294,4 +1382,5 @@ namespace winrt::TerminalApp::implementation
         }
         args.Handled(true);
     }
+
 }

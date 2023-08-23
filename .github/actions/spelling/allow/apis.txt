@@ -28,6 +28,7 @@ CYICON
 Dacl
 dataobject
 dcomp
+delayimp
 DERR
 dlldata
 DNE
@@ -109,12 +110,14 @@ lsass
 LSHIFT
 LTGRAY
 MAINWINDOW
+MAXIMIZEBOX
 memchr
 memicmp
 MENUCOMMAND
 MENUDATA
 MENUINFO
 MENUITEMINFOW
+MINIMIZEBOX
 mmeapi
 MOUSELEAVE
 mov
@@ -167,6 +170,7 @@ roundf
 RSHIFT
 SACL
 schandle
+SEH
 semver
 serializer
 SETVERSION
@@ -198,6 +202,7 @@ TABROW
 TASKBARCREATED
 TBPF
 THEMECHANGED
+THICKFRAME
 tlg
 TME
 tmp
@@ -214,6 +219,7 @@ UOI
 UPDATEINIFILE
 userenv
 USEROBJECTFLAGS
+Vcpp
 Viewbox
 virtualalloc
 vsnwprintf

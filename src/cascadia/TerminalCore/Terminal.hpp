@@ -60,6 +60,22 @@ class Microsoft::Terminal::Core::Terminal final :
     using RenderSettings = Microsoft::Console::Render::RenderSettings;
 
 public:
+    static constexpr bool IsInputKey(WORD vkey)
+    {
+        return vkey != VK_CONTROL &&
+               vkey != VK_LCONTROL &&
+               vkey != VK_RCONTROL &&
+               vkey != VK_MENU &&
+               vkey != VK_LMENU &&
+               vkey != VK_RMENU &&
+               vkey != VK_SHIFT &&
+               vkey != VK_LSHIFT &&
+               vkey != VK_RSHIFT &&
+               vkey != VK_LWIN &&
+               vkey != VK_RWIN &&
+               vkey != VK_SNAPSHOT;
+    }
+
     Terminal();
 
     void Create(til::size viewportSize,
@@ -97,11 +113,13 @@ public:
     RenderSettings& GetRenderSettings() noexcept { return _renderSettings; };
     const RenderSettings& GetRenderSettings() const noexcept { return _renderSettings; };
 
-    const std::vector<Microsoft::Console::VirtualTerminal::DispatchTypes::ScrollMark>& GetScrollMarks() const noexcept;
-    void AddMark(const Microsoft::Console::VirtualTerminal::DispatchTypes::ScrollMark& mark,
+    const std::vector<ScrollMark>& GetScrollMarks() const noexcept;
+    void AddMark(const ScrollMark& mark,
                  const til::point& start,
                  const til::point& end,
                  const bool fromUi);
+
+    std::wstring_view CurrentCommand() const;
 
 #pragma region ITerminalApi
     // These methods are defined in TerminalApi.cpp
@@ -127,7 +145,7 @@ public:
     void UseAlternateScreenBuffer(const TextAttribute& attrs) override;
     void UseMainScreenBuffer() override;
 
-    void MarkPrompt(const Microsoft::Console::VirtualTerminal::DispatchTypes::ScrollMark& mark) override;
+    void MarkPrompt(const ScrollMark& mark) override;
     void MarkCommandStart() override;
     void MarkOutputStart() override;
     void MarkCommandFinish(std::optional<unsigned int> error) override;
@@ -136,11 +154,14 @@ public:
     bool IsVtInputEnabled() const noexcept override;
     void NotifyAccessibilityChange(const til::rect& changedRect) noexcept override;
     void NotifyBufferRotation(const int delta) override;
+
+    void InvokeCompletions(std::wstring_view menuJson, unsigned int replaceLength) override;
+
 #pragma endregion
 
     void ClearMark();
     void ClearAllMarks() noexcept;
-    til::color GetColorForMark(const Microsoft::Console::VirtualTerminal::DispatchTypes::ScrollMark& mark) const;
+    til::color GetColorForMark(const ScrollMark& mark) const;
 
 #pragma region ITerminalInput
     // These methods are defined in Terminal.cpp
@@ -156,7 +177,7 @@ public:
     bool IsTrackingMouseInput() const noexcept;
     bool ShouldSendAlternateScroll(const unsigned int uiButton, const int32_t delta) const noexcept;
 
-    void FocusChanged(const bool focused) noexcept override;
+    void FocusChanged(const bool focused) override;
 
     std::wstring GetHyperlinkAtViewportPosition(const til::point viewportPos);
     std::wstring GetHyperlinkAtBufferPosition(const til::point bufferPos);
@@ -209,6 +230,7 @@ public:
     void TaskbarProgressChangedCallback(std::function<void()> pfn) noexcept;
     void SetShowWindowCallback(std::function<void(bool)> pfn) noexcept;
     void SetPlayMidiNoteCallback(std::function<void(const int, const int, const std::chrono::microseconds)> pfn) noexcept;
+    void CompletionsChangedCallback(std::function<void(std::wstring_view, unsigned int)> pfn) noexcept;
 
     void SetCursorOn(const bool isOn);
     bool IsCursorBlinkingAllowed() const noexcept;
@@ -306,10 +328,11 @@ private:
     std::function<void()> _pfnTaskbarProgressChanged;
     std::function<void(bool)> _pfnShowWindowChanged;
     std::function<void(const int, const int, const std::chrono::microseconds)> _pfnPlayMidiNote;
+    std::function<void(std::wstring_view, unsigned int)> _pfnCompletionsChanged;
 
     RenderSettings _renderSettings;
     std::unique_ptr<::Microsoft::Console::VirtualTerminal::StateMachine> _stateMachine;
-    std::unique_ptr<::Microsoft::Console::VirtualTerminal::TerminalInput> _terminalInput;
+    ::Microsoft::Console::VirtualTerminal::TerminalInput _terminalInput;
 
     std::optional<std::wstring> _title;
     std::wstring _startingTitle;
@@ -393,7 +416,6 @@ private:
     };
     std::optional<KeyEventCodes> _lastKeyEventCodes;
 
-    std::vector<Microsoft::Console::VirtualTerminal::DispatchTypes::ScrollMark> _scrollMarks;
     enum class PromptState : uint32_t
     {
         None = 0,
@@ -408,6 +430,7 @@ private:
     static WORD _VirtualKeyFromCharacter(const wchar_t ch) noexcept;
     static wchar_t _CharacterFromKeyEvent(const WORD vkey, const WORD scanCode, const ControlKeyStates states) noexcept;
 
+    [[maybe_unused]] bool _handleTerminalInputResult(::Microsoft::Console::VirtualTerminal::TerminalInput::OutputType&& out) const;
     void _StoreKeyEvent(const WORD vkey, const WORD scanCode) noexcept;
     WORD _TakeVirtualKeyFromLastKeyEvent(const WORD scanCode) noexcept;
 

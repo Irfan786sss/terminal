@@ -246,6 +246,27 @@ til::CoordType TextBuffer::TotalRowCount() const noexcept
     return _height;
 }
 
+// Method Description:
+// - Gets the number of glyphs in the buffer between two points.
+// - IMPORTANT: Make sure that start is before end, or this will never return!
+// Arguments:
+// - start - The starting point of the range to get the glyph count for.
+// - end - The ending point of the range to get the glyph count for.
+// Return Value:
+// - The number of glyphs in the buffer between the two points.
+size_t TextBuffer::GetCellDistance(const til::point from, const til::point to) const
+{
+    auto startCell = GetCellDataAt(from);
+    const auto endCell = GetCellDataAt(to);
+    auto delta = 0;
+    while (startCell != endCell)
+    {
+        ++startCell;
+        ++delta;
+    }
+    return delta;
+}
+
 // Routine Description:
 // - Retrieves read-only text iterator at the given buffer location
 // Arguments:
@@ -441,27 +462,29 @@ void TextBuffer::_PrepareForDoubleByteSequence(const DbcsAttribute dbcsAttribute
     }
 }
 
-void TextBuffer::ConsumeGrapheme(std::wstring_view& chars) noexcept
+// Given the character offset `position` in the `chars` string, this function returns the starting position of the next grapheme.
+// For instance, given a `chars` of L"x\uD83D\uDE42y" and a `position` of 1 it'll return 3.
+// GraphemePrev would do the exact inverse of this operation.
+// In the future, these functions are expected to also deliver information about how many columns a grapheme occupies.
+// (I know that mere UTF-16 code point iteration doesn't handle graphemes, but that's what we're working towards.)
+size_t TextBuffer::GraphemeNext(const std::wstring_view& chars, size_t position) noexcept
 {
-    // This function is supposed to mirror the behavior of ROW::Write, when it reads characters off of `chars`.
-    // (I know that a UTF-16 code point is not a grapheme, but that's what we're working towards.)
-    chars = til::utf16_pop(chars);
+    return til::utf16_iterate_next(chars, position);
+}
+
+// It's the counterpart to GraphemeNext. See GraphemeNext.
+size_t TextBuffer::GraphemePrev(const std::wstring_view& chars, size_t position) noexcept
+{
+    return til::utf16_iterate_prev(chars, position);
 }
 
 // This function is intended for writing regular "lines" of text as it'll set the wrap flag on the given row.
 // You can continue calling the function on the same row as long as state.columnEnd < state.columnLimit.
-void TextBuffer::WriteLine(til::CoordType row, bool wrapAtEOL, const TextAttribute& attributes, RowWriteState& state)
+void TextBuffer::Write(til::CoordType row, const TextAttribute& attributes, RowWriteState& state)
 {
     auto& r = GetRowByOffset(row);
-
     r.ReplaceText(state);
     r.ReplaceAttributes(state.columnBegin, state.columnEnd, attributes);
-
-    if (state.columnEnd >= state.columnLimit)
-    {
-        r.SetWrapForced(wrapAtEOL);
-    }
-
     TriggerRedraw(Viewport::FromExclusive({ state.columnBeginDirty, row, state.columnEndDirty, row + 1 }));
 }
 
@@ -946,7 +969,7 @@ const Cursor& TextBuffer::GetCursor() const noexcept
     return _cursor;
 }
 
-[[nodiscard]] TextAttribute TextBuffer::GetCurrentAttributes() const noexcept
+const TextAttribute& TextBuffer::GetCurrentAttributes() const noexcept
 {
     return _currentAttributes;
 }
@@ -954,6 +977,11 @@ const Cursor& TextBuffer::GetCursor() const noexcept
 void TextBuffer::SetCurrentAttributes(const TextAttribute& currentAttributes) noexcept
 {
     _currentAttributes = currentAttributes;
+}
+
+void TextBuffer::SetWrapForced(const til::CoordType y, bool wrap)
+{
+    GetRowByOffset(y).SetWrapForced(wrap);
 }
 
 void TextBuffer::SetCurrentLineRendition(const LineRendition lineRendition, const TextAttribute& fillAttributes)
@@ -2662,6 +2690,9 @@ try
     // Set size back to real size as it will be taking over the rendering duties.
     newCursor.SetSize(ulSize);
 
+    newBuffer._marks = oldBuffer._marks;
+    newBuffer._trimMarksOutsideBuffer();
+
     return S_OK;
 }
 CATCH_RETURN()
@@ -2870,4 +2901,131 @@ PointTree TextBuffer::GetPatterns(const til::CoordType firstRow, const til::Coor
     }
     PointTree result(std::move(intervals));
     return result;
+}
+
+const std::vector<ScrollMark>& TextBuffer::GetMarks() const noexcept
+{
+    return _marks;
+}
+
+// Remove all marks between `start` & `end`, inclusive.
+void TextBuffer::ClearMarksInRange(
+    const til::point start,
+    const til::point end)
+{
+    auto inRange = [&start, &end](const ScrollMark& m) {
+        return (m.start >= start && m.start <= end) ||
+               (m.end >= start && m.end <= end);
+    };
+
+    _marks.erase(std::remove_if(_marks.begin(),
+                                _marks.end(),
+                                inRange),
+                 _marks.end());
+}
+void TextBuffer::ClearAllMarks() noexcept
+{
+    _marks.clear();
+}
+
+// Adjust all the marks in the y-direction by `delta`. Positive values move the
+// marks down (the positive y direction). Negative values move up. This will
+// trim marks that are no longer have a start in the bounds of the buffer
+void TextBuffer::ScrollMarks(const int delta)
+{
+    for (auto& mark : _marks)
+    {
+        mark.start.y += delta;
+
+        // If the mark had sub-regions, then move those pointers too
+        if (mark.commandEnd.has_value())
+        {
+            (*mark.commandEnd).y += delta;
+        }
+        if (mark.outputEnd.has_value())
+        {
+            (*mark.outputEnd).y += delta;
+        }
+    }
+    _trimMarksOutsideBuffer();
+}
+
+// Method Description:
+// - Add a mark to our list of marks, and treat it as the active "prompt". For
+//   the sake of shell integration, we need to know which mark represents the
+//   current prompt/command/output. Internally, we'll always treat the _last_
+//   mark in the list as the current prompt.
+// Arguments:
+// - m: the mark to add.
+void TextBuffer::StartPromptMark(const ScrollMark& m)
+{
+    _marks.push_back(m);
+}
+// Method Description:
+// - Add a mark to our list of marks. Don't treat this as the active prompt.
+//   This should be used for marks created by the UI or from other user input.
+//   By inserting at the start of the list, we can separate out marks that were
+//   generated by client programs vs ones created by the user.
+// Arguments:
+// - m: the mark to add.
+void TextBuffer::AddMark(const ScrollMark& m)
+{
+    _marks.insert(_marks.begin(), m);
+}
+
+void TextBuffer::_trimMarksOutsideBuffer()
+{
+    const auto height = GetSize().Height();
+    _marks.erase(std::remove_if(_marks.begin(),
+                                _marks.end(),
+                                [height](const auto& m) {
+                                    return (m.start.y < 0) ||
+                                           (m.start.y >= height);
+                                }),
+                 _marks.end());
+}
+
+std::wstring_view TextBuffer::CurrentCommand() const
+{
+    if (_marks.size() == 0)
+    {
+        return L"";
+    }
+
+    const auto& curr{ _marks.back() };
+    const auto& start{ curr.end };
+    const auto& end{ GetCursor().GetPosition() };
+
+    const auto line = start.y;
+    const auto& row = GetRowByOffset(line);
+    return row.GetText(start.x, end.x);
+}
+
+void TextBuffer::SetCurrentPromptEnd(const til::point pos) noexcept
+{
+    if (_marks.empty())
+    {
+        return;
+    }
+    auto& curr{ _marks.back() };
+    curr.end = pos;
+}
+void TextBuffer::SetCurrentCommandEnd(const til::point pos) noexcept
+{
+    if (_marks.empty())
+    {
+        return;
+    }
+    auto& curr{ _marks.back() };
+    curr.commandEnd = pos;
+}
+void TextBuffer::SetCurrentOutputEnd(const til::point pos, ::MarkCategory category) noexcept
+{
+    if (_marks.empty())
+    {
+        return;
+    }
+    auto& curr{ _marks.back() };
+    curr.outputEnd = pos;
+    curr.category = category;
 }

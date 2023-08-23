@@ -138,8 +138,15 @@ void AdaptDispatch::_WriteToBuffer(const std::wstring_view string)
         state.columnBegin = cursorPosition.x;
 
         const auto textPositionBefore = state.text.data();
-        textBuffer.WriteLine(cursorPosition.y, wrapAtEOL, attributes, state);
+        textBuffer.Write(cursorPosition.y, attributes, state);
         const auto textPositionAfter = state.text.data();
+
+        // TODO: A row should not be marked as wrapped just because we wrote the last column.
+        // It should be marked whenever we write _past_ it (above, _DoLineFeed call). See GH#15602.
+        if (wrapAtEOL && state.columnEnd >= state.columnLimit)
+        {
+            textBuffer.SetWrapForced(cursorPosition.y, true);
+        }
 
         if (state.columnBeginDirty != state.columnEndDirty)
         {
@@ -169,7 +176,7 @@ void AdaptDispatch::_WriteToBuffer(const std::wstring_view string)
             //   we tried writing a wide glyph into the last column which can't work.
             if (textPositionBefore == textPositionAfter && (state.columnBegin == 0 || !wrapAtEOL))
             {
-                textBuffer.ConsumeGrapheme(state.text);
+                state.text = state.text.substr(textBuffer.GraphemeNext(state.text, 0));
             }
 
             if (wrapAtEOL)
@@ -3138,6 +3145,12 @@ bool AdaptDispatch::_EraseScrollback()
     auto& cursor = textBuffer.GetCursor();
     const auto row = cursor.GetPosition().y;
 
+    // Clear all the marks below the new viewport position.
+    textBuffer.ClearMarksInRange(til::point{ 0, height },
+                                 til::point{ bufferSize.width, bufferSize.height });
+    // Then scroll all the remaining marks up. This will trim ones that are now "outside" the buffer
+    textBuffer.ScrollMarks(-top);
+
     // Scroll the viewport content to the top of the buffer.
     textBuffer.ScrollRows(top, height, -top);
     // Clear everything after the viewport.
@@ -3219,6 +3232,10 @@ bool AdaptDispatch::_EraseAll()
 
     // Also reset the line rendition for the erased rows.
     textBuffer.ResetLineRenditionRange(newViewportTop, newViewportBottom);
+
+    // Clear any marks that remain below the start of the
+    textBuffer.ClearMarksInRange(til::point{ 0, newViewportTop },
+                                 til::point{ bufferSize.Width(), bufferSize.Height() });
 
     // GH#5683 - If this succeeded, but we're in a conpty, return `false` to
     // make the state machine propagate this ED sequence to the connected
@@ -3626,8 +3643,8 @@ bool AdaptDispatch::DoITerm2Action(const std::wstring_view string)
 
     if (action == L"SetMark")
     {
-        DispatchTypes::ScrollMark mark;
-        mark.category = DispatchTypes::MarkCategory::Prompt;
+        ScrollMark mark;
+        mark.category = MarkCategory::Prompt;
         _api.MarkPrompt(mark);
         return true;
     }
@@ -3674,8 +3691,8 @@ bool AdaptDispatch::DoFinalTermAction(const std::wstring_view string)
         case L'A': // FTCS_PROMPT
         {
             // Simply just mark this line as a prompt line.
-            DispatchTypes::ScrollMark mark;
-            mark.category = DispatchTypes::MarkCategory::Prompt;
+            ScrollMark mark;
+            mark.category = MarkCategory::Prompt;
             _api.MarkPrompt(mark);
             return true;
         }
@@ -3719,6 +3736,86 @@ bool AdaptDispatch::DoFinalTermAction(const std::wstring_view string)
     // simple state machine here to track the most recently emitted mark from
     // this set of sequences, and which sequence was emitted last, so we can
     // modify the state of that mark as we go.
+    return false;
+}
+// Method Description:
+// - Performs a VsCode action
+// - Currently, the actions we support are:
+//   * Completions: An experimental protocol for passing shell completion
+//     information from the shell to the terminal. This sequence is still under
+//     active development, and subject to change.
+// - Not actually used in conhost
+// Arguments:
+// - string: contains the parameters that define which action we do
+// Return Value:
+// - false in conhost, true for the SetMark action, otherwise false.
+bool AdaptDispatch::DoVsCodeAction(const std::wstring_view string)
+{
+    // This is not implemented in conhost.
+    if (_api.IsConsolePty())
+    {
+        // Flush the frame manually to make sure this action happens at the right time.
+        _renderer.TriggerFlush(false);
+        return false;
+    }
+
+    if constexpr (!Feature_ShellCompletions::IsEnabled())
+    {
+        return false;
+    }
+
+    const auto parts = Utils::SplitString(string, L';');
+
+    if (parts.size() < 1)
+    {
+        return false;
+    }
+
+    const auto action = til::at(parts, 0);
+
+    if (action == L"Completions")
+    {
+        // The structure of the message is as follows:
+        // `e]633;
+        // 0:     Completions;
+        // 1:     $($completions.ReplacementIndex);
+        // 2:     $($completions.ReplacementLength);
+        // 3:     $($cursorIndex);
+        // 4:     $completions.CompletionMatches | ConvertTo-Json
+        unsigned int replacementIndex = 0;
+        unsigned int replacementLength = 0;
+        unsigned int cursorIndex = 0;
+
+        bool succeeded = (parts.size() >= 2) &&
+                         (Utils::StringToUint(til::at(parts, 1), replacementIndex));
+        succeeded &= (parts.size() >= 3) &&
+                     (Utils::StringToUint(til::at(parts, 2), replacementLength));
+        succeeded &= (parts.size() >= 4) &&
+                     (Utils::StringToUint(til::at(parts, 3), cursorIndex));
+
+        // VsCode is using cursorIndex and replacementIndex, but we aren't currently.
+        if (succeeded)
+        {
+            // Get the combined lengths of parts 0-3, plus the semicolons. We
+            // need this so that we can just pass the remainder of the string.
+            const auto prefixLength = til::at(parts, 0).size() + 1 +
+                                      til::at(parts, 1).size() + 1 +
+                                      til::at(parts, 2).size() + 1 +
+                                      til::at(parts, 3).size() + 1;
+            if (prefixLength > string.size())
+            {
+                return true;
+            }
+            // Get the remainder of the string
+            const auto remainder = string.substr(prefixLength);
+
+            _api.InvokeCompletions(parts.size() < 5 ? L"" : remainder,
+                                   replacementLength);
+        }
+
+        // If it's poorly formatted, just eat it
+        return true;
+    }
     return false;
 }
 
@@ -4100,14 +4197,14 @@ void AdaptDispatch::_ReportSGRSetting() const
         else if (color.IsIndex256())
         {
             const auto index = color.GetIndex();
-            fmt::format_to(std::back_inserter(response), FMT_COMPILE(L";{};5;{}"), base + 8, index);
+            fmt::format_to(std::back_inserter(response), FMT_COMPILE(L";{}:5:{}"), base + 8, index);
         }
         else if (color.IsRgb())
         {
             const auto r = GetRValue(color.GetRGB());
             const auto g = GetGValue(color.GetRGB());
             const auto b = GetBValue(color.GetRGB());
-            fmt::format_to(std::back_inserter(response), FMT_COMPILE(L";{};2;{};{};{}"), base + 8, r, g, b);
+            fmt::format_to(std::back_inserter(response), FMT_COMPILE(L";{}:2::{}:{}:{}"), base + 8, r, g, b);
         }
     };
     addColor(30, attr.GetForeground());
